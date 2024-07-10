@@ -1,0 +1,114 @@
+name: 🚀 Deploy
+description: |
+  Deploy the application to a given stage.
+inputs:
+  stage:
+    description: "the stage to deploy to"
+    required: true
+  server_pem:
+    description: "PEM file for the server"
+    required: true
+  ansible_vault_password:
+    description: "Ansible vault password"
+    required: true
+  github_token:
+    description: "GitHub token"
+    required: true
+  app_name:
+    description: "Application name"
+    required: true
+  aws_role_arn:
+    description: "ARN of the role to assume to deploy"
+    required: true
+  aws_region:
+    description: "AWS region"
+    default: "us-east-1"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up AWS CLI
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Install Session Manager Plugin
+      shell: bash
+      run: |
+        curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+        sudo dpkg -i session-manager-plugin.deb
+
+    - name: Store ec2 instance id
+      shell: bash
+      id: ec2_instance_id
+      env:
+        STAGE: ${{ inputs.stage }}
+      run: |
+        instance_id=$(aws ec2 describe-instances --filters "Name=tag:Environment,Values=$STAGE" --query "Reservations[*].Instances[*].InstanceId" --output text)
+        echo "::set-output name=instance_id::$instance_id"
+
+    - name: Write SSH Config
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh/
+        touch ~/.ssh/config
+        touch ~/.ssh/ssm_proxy.log
+        cat <<EOF >> ~/.ssh/config
+        Host i-* mi-*
+          User admin
+          ProxyCommand sh -c "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p'"
+          StrictHostKeyChecking no
+          IdentityFile ~/.ssh/default-server.pem
+        EOF
+
+    - name: Setup SSH
+      shell: bash
+      run: |
+        echo "Setting up PEM file"
+        echo "${{ inputs.server_pem }}" > ~/.ssh/default-server.pem
+        chmod 600 ~/.ssh/default-server.pem
+
+    - name: Test SSH
+      shell: bash
+      run: |
+        ssh admin@${{ steps.ec2_instance_id.outputs.instance_id }} "echo 'Hello, World!'"
+
+    - name: Checkout ansible repository
+      uses: actions/checkout@v4
+      with:
+        repository: kontango-org/default-server
+        path: default-server
+        ref: main
+        token: ${{ inputs.github_token }}
+
+    - name: Setup Ansible password
+      shell: bash
+      run: |
+        echo "${{ inputs.ansible_vault_password }}" > default-server/ansible/passwords
+
+    - name: Build Ansible .ini file
+      shell: bash
+      run: |
+        touch default-server/ansible/inventory.ini
+        echo "[default-server]" > default-server/ansible/inventory.ini
+        echo "${{ steps.ec2_instance_id.outputs.instance_id }}" >> default-server/ansible/inventory.ini
+
+    - name: Install Ansible
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ansible
+
+    - name: Execute Ansible playbook
+      shell: bash
+      run: |
+        ansible-playbook \
+          -i default-server/ansible/inventory.ini \
+          -e @default-server/ansible/vars/${{ inputs.stage }}.yaml \
+          -e github_token=${{ inputs.github_token }} \
+          --vault-password-file default-server/ansible/passwords \
+          --force-handlers -v \
+          --limit default-server \
+          -t ${{ inputs.app_name }} \
+          default-server/ansible/deploy.yaml

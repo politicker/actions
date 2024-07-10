@@ -1,0 +1,77 @@
+name: 🏷️ Tag and Push to ECR
+description: |
+  Build a Docker image and push it to ECR
+
+inputs:
+  image_repository:
+    description:
+      "the name of the ECR repository. Should match app/service name e.g.
+      trader-portal"
+    required: true
+  github_repository:
+    description: "the name of the github repository where the target Dockerfile resides"
+    required: true
+  git_sha:
+    description:
+      "the sha of the commit that triggered the workflow. This is used as
+      the image tag"
+    required: true
+  image_tag:
+    description: "the tag to apply to the Docker image"
+    required: true
+  aws_region:
+    description: "the AWS region where the ECR repository is located"
+    default: "us-east-1"
+  CREDENTIALS_ROLE_ARN:
+    description: "the ARN of the role to assume to push to ECR"
+    required: true
+  AWS_ACCOUNT_ID:
+    description: "the AWS account ID where the ECR repository is located"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.CREDENTIALS_ROLE_ARN }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Login to ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+      with:
+        registries: ${{ inputs.AWS_ACCOUNT_ID }}
+        mask-password: true
+
+    - name: Checkout caller repository
+      uses: actions/checkout@v4
+      with:
+        path: caller-repo
+        repository: ${{ inputs.github_repository }}
+        ref: main
+
+    - name: Build, tag, and push docker image to ECR
+      shell: bash
+      env:
+        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        REPOSITORY: ${{ inputs.image_repository }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+        GIT_SHA: ${{ inputs.git_sha }}
+        REPO_PATH: caller-repo
+      run: |
+        echo "REGISTRY: $REGISTRY"
+        echo "REPOSITORY: $REPOSITORY"
+        echo "IMAGE_TAG: $IMAGE_TAG"
+
+        docker pull $REGISTRY/$REPOSITORY:latest || true
+
+        docker build \
+          -t $REGISTRY/$REPOSITORY:$IMAGE_TAG \
+          -t $REGISTRY/$REPOSITORY:latest \
+          --cache-from $REGISTRY/$REPOSITORY:latest \
+          --build-arg VERSION=$GIT_SHA $REPO_PATH
+
+        docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+        docker push $REGISTRY/$REPOSITORY:latest

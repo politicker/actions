@@ -1,0 +1,48 @@
+name: Tag Docker Release
+description: Tag a Docker image with the release tag and push it to ECR
+
+inputs:
+  source_tag:
+    description: "the tag of the source image to pull"
+    required: true
+  stage:
+    description: "the stage to deploy the image to"
+    required: true
+  aws_account_id:
+    description: "the AWS account ID where the ECR repository is located"
+    required: true
+  aws_role_arn:
+    description: "the ARN of the role to assume to push to ECR"
+    required: true
+  aws_region:
+    description: "the AWS region where the ECR repository is located"
+    default: "us-east-1"
+  app_name:
+    description: "the name of the ECR repository. Should match app/service name e.g. trader-portal"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up AWS CLI
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Docker login
+      shell: bash
+      env:
+        image_repo: "${{ inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com/${{ inputs.app_name }}"
+      run: |
+        aws ecr get-login-password \
+          --region us-east-1 | docker login --username AWS --password-stdin $image_repo
+
+    - name: Pull and tag image
+      shell: bash
+      env:
+        image_repo: "${{ inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com/${{ inputs.app_name }}"
+      run: |
+        docker pull $image_repo:${{ inputs.source_tag }}
+        docker tag $image_repo:${{ inputs.source_tag }} $image_repo:${{ inputs.stage }}
+        docker push $image_repo:${{ inputs.stage }}
