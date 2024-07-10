@@ -1,0 +1,70 @@
+name: 🚀 Go Release
+description: |
+  Build a Go binary and create a GitHub release for it
+
+inputs:
+  github_repository:
+    description: "the name of the github repository where the target Dockerfile resides"
+    required: true
+  git_sha:
+    description:
+      "the sha of the commit that triggered the workflow. This is used as
+      the commit to create a release for"
+    required: true
+  go_version:
+    description: "the version of Go to use for building the binary"
+    default: "1.22.2"
+  app_name:
+    description: "the name of the Go binary to build"
+    required: true
+  GH_TOKEN:
+    description: "GitHub token for creating releases"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout caller repository
+      uses: actions/checkout@v4
+      with:
+        path: .
+        repository: ${{ inputs.github_repository }}
+        ref: main
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go_version }}
+
+    - name: Build Go Binary
+      shell: bash
+      env:
+        app_name: ${{ inputs.app_name }}
+        git_sha: ${{ inputs.git_sha }}
+        go_arch: amd64
+        go_os: linux
+      run: |
+        echo $git_sha > internal/cmd/VERSION
+        GOARCH=$go_arch GOOS=$go_os go build -o $app_name cmd/main.go
+
+    - name: Zip go binary
+      shell: bash
+      env:
+        app_name: ${{ inputs.app_name }}
+        git_sha: ${{ inputs.git_sha }}
+      run: |
+        zip $app_name-$git_sha.zip $app_name
+
+    - name: Create Release
+      shell: bash
+      env:
+        tag_name: ${{ inputs.git_sha }}
+        github_repository: ${{ inputs.github_repository }}
+        app_name: ${{ inputs.app_name }}
+        GH_TOKEN: ${{ inputs.GH_TOKEN }}
+      run: |
+        gh release create "${tag_name:0:7}" \
+            --repo="$github_repository" \
+            --title="$tag_name" \
+            --generate-notes \
+            $app_name-$tag_name.zip
